@@ -1,0 +1,414 @@
+#!/usr/bin/python3
+
+import cgi,cgitb
+cgitb.enable(display=0,logdir="/var/www/example.com/html/logs") # for debugging
+
+from subprocess import Popen, PIPE, STDOUT
+import json
+import urllib.request
+from urllib.parse import urlparse
+import os
+import uuid
+import hashlib
+import requests
+import sys
+import math
+import re
+
+linkhost="example_com"
+linkport="443" # default HTTPS port
+apikey='YourRettiwtApiKey'
+downloaddir='/var/www/example.com/html/'
+rpchost="127.0.0.1" # localhost / example.com
+rpcport=9266 # this is the default port
+rpcuser="bitmarkrpc"
+rpcpassword="YourBitmarkRpcPassword"
+rpcheaders = {'content-type': "application/json", 'cache-control': "no-cache"}
+certhashhex="abcd..." # SHA256 HTTPS cert fingerprint for example.com, lowercase, no spaces or colons
+maxdesclen = 92 # pubkey holds 65 bytes, 4 reserved for meta info. If lang size>0, less for desc-text
+# ^ since we are encoding in base 38, we can store more by a factor of log2(256)/log2(38)
+punctuation = '.,;:_$&!?()\[\]{}/ \n"' # hyphen and apostrophe/single quote considered part of word
+
+def split_punct(s):
+    words = re.split(r"["+punctuation+"]+",s)
+    out = []
+    for w in words:
+        if len(w)>0 and w not in out: # no duplicates
+            out.append(w)
+    return out
+
+def alnumdash_string(s):
+    if any(not (c.isalnum() or c=='-') for c in s):
+        return False
+    return True
+
+def get_alnumdash_string(s):
+    out = ''
+    for c in s:
+        if c.isalnum() or c=='-':
+            out += c
+    return out
+     
+def get_file_extension_url(url):
+    path = urlparse(url).path
+    ext = os.path.splitext(path)[1]
+    if len(ext) > 0:
+        ext = ext[1:]
+    return ext
+
+def sha256sum(filename):
+        h  = hashlib.sha256()
+        b  = bytearray(128*1024)
+        mv = memoryview(b)
+        with open(filename, 'rb', buffering=0) as f:
+            while n := f.readinto(mv):
+                h.update(mv[:n])
+        return h.hexdigest()
+
+def remove_last_desc_word(s):
+    i = 1
+    for c in reversed(s):
+        if c == '_':
+            break
+        i += 1
+    if i==len(s):
+        return s[:maxdesclen]
+    return s[:-i]
+
+# Straightforward algo for condensing a post into a description. Later may use dictionaries or AI.
+def get_description(posttext,postquotedtext,postxuname,postxunameorig,postxunamequoted):
+    desctext = ''
+    postwords = split_punct(posttext)
+    descwords = set()
+    desclen = 0
+    maxbasedesclen = maxdesclen
+    if postquotedtext:
+        maxbasedesclen = math.ceil(maxdesclen/2)
+    for word in postwords: # first get hashtags
+        #print("check word "+word)
+        if word[0] != '#' or len(word)<2:
+            continue
+        hashtag = word[1:]
+        if not alnumdash_string(hashtag):
+            continue
+        hashtag = hashtag.lower() # a-z0-9_- "base 38"
+        if hashtag not in descwords:
+            desctext += '_'+hashtag
+            desclen += len(hashtag)+1
+            descwords.add(hashtag)
+            if desclen > maxbasedesclen:
+                break
+            
+    """for word in postwords: # then @
+        if word[0] != '@' or len(word)<2:
+            continue"""
+                    
+    if desclen <= maxbasedesclen: # equality actually means one less due to extra '_'
+        for word in postwords: # then alphanumdash words
+            if not alnumdash_string(word):
+                continue
+            lword = word.lower()
+            if lword not in descwords:
+                desctext += '_'+lword
+                desclen += len(lword)+1
+                descwords.add(lword)
+                if desclen > maxbasedesclen:
+                    break
+
+    if desclen <= maxbasedesclen:
+        for word in postwords: # then create words from the alnumdash parts in a hashtag
+            if alnumdash_string(word) or word[0] != '#' or len(word)<2:
+                continue
+            hashtag = word[1:]
+            lword = get_alnumdash_string(hashtag).lower()
+            if lword not in descwords:
+                desctext += '_'+lword
+                desclen += len(lword)+1
+                descwords.add(lword)
+                if desclen > maxbasedesclen:
+                    break
+
+    if desclen <= maxbasedesclen:
+        for word in postwords: # then words from alnumdash parts of non-hashtags
+            if alnumdash_string(word) or word[0] == '#':
+                continue
+            lword = get_alnumdash_string(word).lower()
+            if lword not in descwords:
+                desctext += '_'+lword
+                desclen += len(lword)+1
+                descwords.add(lword)
+                if desclen > maxbasedesclen:
+                    break
+
+    if postquotedtext and desclen <= maxdesclen: # repeat the process for quoted text
+        postwords = split_punct(postquotedtext)
+        
+        for word in postwords:
+            if word[0] != '#' or len(word)<2:
+                continue
+            hashtag = word[1:]
+            if not alnumdash_string(hashtag):
+                continue
+            hashtag = hashtag.lower()
+            if hashtag not in descwords:
+                desctext += '_'+hashtag
+                desclen += len(hashtag)+1
+                descwords.add(hashtag)
+                if desclen > maxdesclen:
+                    break
+                    
+        if desclen <= maxdesclen:
+            for word in postwords:
+                if not alnumdash_string(word):
+                    continue
+                lword = word.lower()
+                if lword not in descwords:
+                    desctext += '_'+lword
+                    desclen += len(lword)+1
+                    descwords.add(lword)
+                    if desclen > maxdesclen:
+                        break
+
+        if desclen <= maxdesclen:
+            for word in postwords:
+                if alnumdash_string(word) or word[0] != '#' or len(word)<2:
+                    continue
+                hashtag = word[1:]
+                lword = get_alnumdash_string(hashtag).lower()
+                if not lword in descwords:
+                    desctext += '_'+lword
+                    desclen += len(lword)+1
+                    descwords.add(lword)
+                    if desclen > maxdesclen:
+                        break
+
+        if desclen <= maxdesclen:
+            for word in postwords:
+                if alnumdash_string(word) or word[0] == '#':
+                    continue
+                lword = get_alnumdash_string(word).lower()
+                if not lword in descwords:
+                    desctext += '_'+lword
+                    desclen += len(lword)+1
+                    descwords.add(lword)
+                    if desclen > maxdesclen:
+                        break
+
+    # if there's space left over, put the user names
+    if desclen <= maxdesclen:
+        lword = get_alnumdash_string(postxuname).lower()
+        if not lword in descwords:
+            desctext += '_'+lword
+            desclen += len(lword)+1
+            descwords.add(lword)
+    if postxunameorig and desclen <= maxdesclen:
+        lword = get_alnumdash_string(postxunameorig).lower()
+        if not lword in descwords:
+            desctext += '_'+lword
+            desclen += len(lword)+1
+            descwords.add(lword)
+    if postxunamequoted and desclen <= maxdesclen:
+        lword = get_alnumdash_string(postxunamequoted).lower()
+        if not lword in descwords:
+            desctext += '_'+lword
+            desclen += len(lword)+1
+            descwords.add(lword)
+
+    # Now trim any overflow
+
+    desctext = desctext[1:] # remove leading underscore
+    desclen -= 1
+    
+    if desclen > maxdesclen: # remove last word
+        desctext = remove_last_desc_word(desctext)
+
+    return desctext
+        
+form = cgi.FieldStorage()
+actionlist = form.getlist('a')
+action = None
+cgiresponse = {}
+if actionlist:
+    action = actionlist[0]
+if action == 'markpost':
+    cgiresponse["posts"] = []
+    xuidlist = form.getlist('xuid')
+    xuid = None
+    if xuidlist:
+        xuid = xuidlist[0]
+    countlist = form.getlist('count')
+    count = None
+    if countlist:
+        count = countlist[0]
+    cursorlist = form.getlist('cursor')
+    cursor = None
+    if cursorlist:
+        cursor = cursorlist[0]
+    if xuid is None or len(xuid)<1:
+        cgiresponse["error"] = "you must provide an xuid parameter"
+    elif not xuid.isnumeric():
+        cgiresponse["error"] = 'xuid must be numeric'
+    elif count is None or len(count)<1:
+        cgiresponse["error"] = 'you must provide a "count" parameter'
+    elif not count.isnumeric():
+        cgiresponse["error"] = 'count must be numeric'
+    else:
+        if cursor is None or cursor == "null":
+            cursor = ""
+        if any(not (c.isalnum() or c=='-' or c=='_') for c in cursor):
+            cgiresponse["error"] = 'cursor must be alphanumeric or with hyphens or underscores'
+        else:
+            out = Popen("/home/coins/.npm-global/bin/rettiwt -k '"+apikey+"' user timeline "+xuid+" "+count+" "+cursor, shell=True,stdin=PIPE,stdout=PIPE,stderr=STDOUT,close_fds=True,universal_newlines=True).stdout.read()
+            posts = json.loads(out)
+            for p in range(int(count)):
+                cgiresponsep = {}
+                post = posts["list"][p]
+                posttext = None
+                postmedia = None
+                postid = post["id"]
+                postidorig = None
+                postidquoted = None
+                postidorigquoted = None
+                postorig = None
+                postquoted = None
+                postorigquoted = None
+                postxuidorig = None
+                postxunameorig = None
+                postxuidquoted = None
+                postxunamequoted = None
+                postquotedtext = None
+                postquotedmedialinks = []
+                if "retweetedTweet" in post:
+                    postorig = post["retweetedTweet"]
+                if postorig:                
+                    posttext = postorig["fullText"]
+                    if "media" in postorig:
+                        postmedia = postorig["media"]
+                    postxuidorig = postorig["tweetBy"]["id"]
+                    postxunameorig = postorig["tweetBy"]["userName"]
+                    postidorig = postorig["id"]
+                    if "quoted" in postorig:
+                        postidorigquoted = postorig["quoted"]
+                else:
+                    posttext = post["fullText"]
+                    if "media" in post:
+                        postmedia = post["media"]
+                    if "quoted" in post:
+                        postidquoted = post["quoted"]
+                if postidquoted or postidorigquoted: # get the quoted post
+                    quoteid = None
+                    if postidquoted:
+                        quoteid = postidquoted
+                    else:
+                        quoteid = postidorigquoted
+                    outquote = Popen("/home/coins/.npm-global/bin/rettiwt -k '"+apikey+"' tweet details "+quoteid, shell=True,stdin=PIPE,stdout=PIPE,stderr=STDOUT,close_fds=True,universal_newlines=True).stdout.read()
+                    postquoted = json.loads(outquote)
+                    postxuidquoted = postquoted["tweetBy"]["id"]
+                    postxunamequoted = postquoted["tweetBy"]["userName"]
+                    postquotedtext = postquoted["fullText"]
+                    if "media" in postquoted:
+                        postquotedmedia = postquoted["media"]
+                        for media in postquotedmedia:
+                            mediaurl = media["url"]
+                            mediaext = get_file_extension_url(mediaurl)
+                            mediauuid = str(uuid.uuid4())
+                            filename = downloaddir+mediauuid+"."+mediaext
+                            urllib.request.urlretrieve(mediaurl,filename)
+                            mediahash = sha256sum(filename)
+                            newfilename = downloaddir+mediahash
+                            os.rename(filename,newfilename+"."+mediaext)
+                            if not os.path.isfile(newfilename):
+                                os.symlink(newfilename+"."+mediaext,newfilename)
+                            postquotedmedialinks.append(mediaurl)
+                            postquotedmedialinks.append(mediahash)
+                    
+                postxuid = post["tweetBy"]["id"]
+                postxuname = post["tweetBy"]["userName"]
+                postmedialinks = []
+                if postmedia:
+                    for media in postmedia:
+                        mediaurl = media["url"]
+                        mediaext = get_file_extension_url(mediaurl)
+                        mediauuid = str(uuid.uuid4())
+                        filename = downloaddir+mediauuid+"."+mediaext
+                        urllib.request.urlretrieve(mediaurl,filename)
+                        mediahash = sha256sum(filename)
+                        newfilename = downloaddir+mediahash
+                        os.rename(filename,newfilename+"."+mediaext)
+                        if not os.path.isfile(newfilename):
+                            os.symlink(newfilename+"."+mediaext,newfilename)
+                        postmedialinks.append(mediaurl)
+                        postmedialinks.append(mediahash)
+                # save key data to an 'xmk' file
+                xmkfilename = downloaddir+str(uuid.uuid4())+".xmk"    
+                xmkfile = open(xmkfilename,'a')
+                xmkfile.write('id ('+str(len(postid))+'): '+postid+'\n')
+                if postidorig:
+                    xmkfile.write('id orig ('+str(len(postidorig))+'): '+postidorig+'\n')
+                if postidquoted:
+                    xmkfile.write('id quote ('+str(len(postidquoted))+'): '+postidquoted+'\n')
+                if postidorigquoted:
+                    xmkfile.write('id orig quote ('+str(len(postidorigquoted))+'): '+postidorigquoted+'\n')
+                xmkfile.write('uid ('+str(len(postxuid)+len(postxuname)+1)+'): '+postxuid+' '+postxuname+'\n')
+                if postxuidorig:
+                    xmkfile.write('uid orig ('+str(len(postxuidorig)+len(postxunameorig)+1)+'): '+postxuidorig+' '+postxunameorig+'\n')
+                if postxuidquoted:
+                    xmkfile.write('uid quote ('+str(len(postxuidquoted)+len(postxunamequoted)+1)+'): '+postxuidquoted+' '+postxunamequoted+'\n')
+                xmkfile.write('text ('+str(len(posttext))+'): '+posttext+'\n')
+                for l in range(int(len(postmedialinks)/2)):
+                    xmkfile.write('media ('+str(len(postmedialinks[2*l])+len(postmedialinks[2*l+1])+1)+'): '+postmedialinks[2*l]+' '+postmedialinks[2*l+1]+'\n')
+                if postquoted:
+                    xmkfile.write('text quote ('+str(len(postquotedtext))+'):'+postquotedtext+'\n')
+                for l in range(int(len(postquotedmedialinks)/2)):
+                    xmkfile.write('media quote ('+str(len(postquotedmedialinks[2*l])+len(postquotedmedialinks[2*l+1])+1)+'): '+postquotedmedialinks[2*l]+' '+postquotedmedialinks[2*l+1]+'\n')
+                xmkfile.close()
+                xmkfilehash = sha256sum(xmkfilename)
+                newxmkfilename = downloaddir+xmkfilehash
+                cgiresponsep["hash"] = xmkfilehash
+                cgiresponsep["postid"] = postid
+                desctext = get_description(posttext,postquotedtext,postxuname,postxunameorig,postxunamequoted)
+                cgiresponsep["desctext"] = desctext
+                if (os.path.isfile(newxmkfilename)):
+                    cgiresponsep["error"] = "post_already_marked"
+                    cgiresponse["posts"].append(cgiresponsep)
+                    continue
+                os.rename(xmkfilename,newxmkfilename+".xmk")
+                if not os.path.isfile(newxmkfilename):
+                    os.symlink(newxmkfilename+".xmk",newxmkfilename)
+                # send hash-link to blockchain via the linkmark protocol
+                rpcurl="http://"+rpchost+":"+str(rpcport)
+                marking={}
+                marking["hash"] = {}
+                marking["link"] = {}
+                markinghash = marking["hash"]
+                markinghash["type"] = "sha256"
+                markinghash["hex"] = xmkfilehash
+                markinglink = marking["link"]
+                markinglink["protocol"] = "https"
+                markinglink["host"] = linkhost
+                markinglink["port"] = linkport
+                markinglink["path"] = "" # path is a waste of space, not recommended
+                markinglink["cert_hash"] = {}
+                markinglinkcerthash = markinglink["cert_hash"]
+                markinglinkcerthash["type"] = "sha256"
+                markinglinkcerthash["hex"] = certhashhex
+                rpcdata = {"jsonrpc":"1.0","id":"pythoncgi","method":"mark","params":[marking]}
+                rpcdatadump = json.dumps(rpcdata)
+                rpcresponse = requests.post(url=rpcurl,data=rpcdatadump, headers=rpcheaders, auth=(rpcuser,rpcpassword))
+                cgiresponsep["bitmark_rpc_response_1"] = rpcresponse.text
+                # send hash-desc
+                marking2 = {}
+                marking2["hash"] = markinghash
+                marking2["desc"] = {}
+                marking2desc = marking2["desc"]
+                marking2desc["lang"] = ""
+                marking2desc["text"] = desctext
+                rpcdata = {"jsonrpc":"1.0","id":"pythoncgi","method":"mark","params":[marking2]}
+                rpcdatadump = json.dumps(rpcdata)
+                rpcresponse = requests.post(url=rpcurl,data=rpcdatadump, headers=rpcheaders, auth=(rpcuser,rpcpassword))
+                cgiresponsep["bitmark_rpc_response_2"] = rpcresponse.text
+                cgiresponse["posts"].append(cgiresponsep)
+else:
+    cgiresponse["error"] = "unknown_action"
+    
+print(json.dumps(cgiresponse))
