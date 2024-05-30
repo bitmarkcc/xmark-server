@@ -40,6 +40,8 @@ def split_punct(s):
 def alnumdash_string(s):
     if any(not (c.isalnum() or c=='-') for c in s):
         return False
+    if len(s) == 1 and s[0] == '-':
+        return False
     return True
 
 def get_alnumdash_string(s):
@@ -47,6 +49,8 @@ def get_alnumdash_string(s):
     for c in s:
         if c.isalnum() or c=='-':
             out += c
+    if len(out)==1 and out[0] == '-':
+        return ''
     return out
      
 def get_file_extension_url(url):
@@ -121,6 +125,8 @@ def get_description(posttext,postquotedtext,postxuname,postxunameorig,postxuname
                 continue
             hashtag = word[1:]
             lword = get_alnumdash_string(hashtag).lower()
+            if len(lword) < 1:
+                continue
             if lword not in descwords:
                 desctext += '_'+lword
                 desclen += len(lword)+1
@@ -133,6 +139,8 @@ def get_description(posttext,postquotedtext,postxuname,postxunameorig,postxuname
             if alnumdash_string(word) or word[0] == '#':
                 continue
             lword = get_alnumdash_string(word).lower()
+            if len(lword) < 1:
+                continue
             if lword not in descwords:
                 desctext += '_'+lword
                 desclen += len(lword)+1
@@ -175,6 +183,8 @@ def get_description(posttext,postquotedtext,postxuname,postxunameorig,postxuname
                     continue
                 hashtag = word[1:]
                 lword = get_alnumdash_string(hashtag).lower()
+                if len(lword) < 1:
+                    continue
                 if not lword in descwords:
                     desctext += '_'+lword
                     desclen += len(lword)+1
@@ -187,6 +197,8 @@ def get_description(posttext,postquotedtext,postxuname,postxunameorig,postxuname
                 if alnumdash_string(word) or word[0] == '#':
                     continue
                 lword = get_alnumdash_string(word).lower()
+                if len(lword) < 1:
+                    continue
                 if not lword in descwords:
                     desctext += '_'+lword
                     desclen += len(lword)+1
