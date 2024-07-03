@@ -45,14 +45,16 @@ a, a:hover {
     </style>
   </head>
   <body>
-    <div id="menu">Xmark &emsp; <a href="/downloads">Downloads</a></div>
+    <div id="menu">Xmark &emsp; <a href="/downloads">Downloads</a> &emsp; <a href="/privacy">Privacy</a></div>
     <main role="main" class="container">
 <div class="starter-template text-center" style="margin-top:40px;">
   <p>Xmark is a browser extension for marking your X/Twitter posts to the <a href="https://bitmark.io" target="_blank">Bitmark</a> (BTM/MARKS) blockchain. Anytime you post/respost something on X, the extension will send a request to our server to mark the post in a transaction in the blockchain. The extension works quietly in the background and its log can be viewed in the browser console. The entire content of the post will be stored in our server (including images/videos) and can be easily downloaded by requesting the needed hash. The blockchain stores the <i>hash</i> of the (XMK) text file containing the full text, metadata, and media links of the post; the <i>link</i> (xmark.cc) together with the hash of our HTTPS certificate; and a short (92 character) <i>description</i>.</p>
 
   <p>After the post has been sent to our Bitmark node, it should be in the blockchain in a few minutes (2 min target time), and you can see it with the relevant hash in a BTM <a href="https://explorer.bitmark.co" target="_blank">block explorer</a>. <a href="https://linkmark.xyz" target="_blank">Linkmark</a> is a related project that specifies the marking protocol and through that site one can search for marked data using key words or hashes.</p>
 
-  <a href="https://addons.mozilla.org/en-US/firefox/addon/xmark/">Firefox extension</a>
+  <!-- <a href="https://addons.mozilla.org/en-US/firefox/addon/xmark/">Firefox extension</a> -->
+  <a href="https://chromewebstore.google.com/detail/xmark/enaljbaalbidhgjjdfagbfcinidkjcji">Chrome extension</a><br />
+  <a href="/xmark-firefox.xpi">Firefox extension</a>
 </div>
     </main><!-- /.container -->
 </html>

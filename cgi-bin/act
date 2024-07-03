@@ -27,7 +27,7 @@ rpcheaders = {'content-type': "application/json", 'cache-control': "no-cache"}
 certhashhex="abcd..." # SHA256 HTTPS cert fingerprint for example.com, lowercase, no spaces or colons
 maxdesclen = 92 # pubkey holds 65 bytes, 4 reserved for meta info. If lang size>0, less for desc-text
 # ^ since we are encoding in base 38, we can store more by a factor of log2(256)/log2(38)
-punctuation = '.,;:_$&!?()\[\]{}/ \n"' # hyphen and apostrophe/single quote considered part of word
+punctuation = '.,;:_$&!?@()\[\]{}/ \n"' # hyphen and apostrophe/single quote considered part of word
 
 def split_punct(s):
     words = re.split(r"["+punctuation+"]+",s)
