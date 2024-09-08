@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 import cgi,cgitb
-cgitb.enable(display=0,logdir="/var/www/xmark.cc/html/logs")
+cgitb.enable(display=0,logdir="/var/www/example.com/html/logs")
 
 from subprocess import Popen, PIPE, STDOUT
 import json
