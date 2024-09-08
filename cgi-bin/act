@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 import cgi,cgitb
-cgitb.enable(display=0,logdir="/var/www/example.com/html/logs") # for debugging
+cgitb.enable(display=0,logdir="/var/www/xmark.cc/html/logs")
 
 from subprocess import Popen, PIPE, STDOUT
 import json
@@ -26,8 +26,8 @@ rpcpassword="YourBitmarkRpcPassword"
 rpcheaders = {'content-type': "application/json", 'cache-control': "no-cache"}
 certhashhex="abcd..." # SHA256 HTTPS cert fingerprint for example.com, lowercase, no spaces or colons
 maxdesclen = 92 # pubkey holds 65 bytes, 4 reserved for meta info. If lang size>0, less for desc-text
-# ^ since we are encoding in base 38, we can store more by a factor of log2(256)/log2(38)
 punctuation = '''.,;:_$&!?@()\[\]{}/ \n'"''' # hyphen considered part of word
+nosrelay = 'ws://127.0.0.1:8080' # nostr relay
 
 def split_punct(s):
     words = re.split(r"["+punctuation+"]+",s)
@@ -79,8 +79,60 @@ def remove_last_desc_word(s):
         return s[:maxdesclen]
     return s[:-i]
 
+# Based on get_description_twitter below
+def get_description_nostr(notetext,kind,tags):
+    if kind == 6 or kind == 16: # repost
+        etagval = None
+        for tag in tags:
+            if tag[0] == 'e':
+                etagval = tag[1] # the event id of the original note
+                break
+        if etagval and len(etagval)<65:
+            desctext = 'respost_'+etagval
+        else:
+            desctext = 'repost'
+    else:
+        desctext = ''
+        notewords = split_punct(notetext)
+        descwords = set()
+        desclen = 0
+        for word in notewords:
+            if not alnumdash_string(word):
+                continue
+            lword = word.lower()
+            if lword not in descwords:
+                desctext += '_'+lword
+                desclen += len(lword)+1
+                descwords.add(lword)
+                if desclen > maxdesclen:
+                    break
+        if desclen <= maxdesclen:
+            for word in notewords:
+                if alnumdash_string(word):
+                    continue
+                lword = get_alnumdash_string(word).lower()
+                if len(lword) < 1:
+                    continue
+                if lword not in descwords:
+                    desctext += '_'+lword
+                    desclen += len(lword)+1
+                    descwords.add(lword)
+                    if desclen > maxdesclen:
+                        break
+        if desclen <= maxdesclen:
+            lword = "kind-"+str(kind)
+            if not lword in descwords:
+                desctext += '_'+lword
+                desclen += len(lword)+1
+                descwords.add(lword)
+        desctext = desctext[1:] # remove leading underscore
+        desclen -= 1
+        if desclen > maxdesclen: # remove last word
+            desctext = remove_last_desc_word(desctext)
+        return desctext
+
 # Straightforward algo for condensing a post into a description. Later may use dictionaries or AI.
-def get_description(posttext,postquotedtext,postxuname,postxunameorig,postxunamequoted):
+def get_description_twitter(posttext,postquotedtext,postxuname,postxunameorig,postxunamequoted):
     desctext = ''
     postwords = split_punct(posttext)
     descwords = set()
@@ -102,11 +154,7 @@ def get_description(posttext,postquotedtext,postxuname,postxunameorig,postxuname
             descwords.add(hashtag)
             if desclen > maxbasedesclen:
                 break
-            
-    """for word in postwords: # then @
-        if word[0] != '@' or len(word)<2:
-            continue"""
-                    
+                                
     if desclen <= maxbasedesclen: # equality actually means one less due to extra '_'
         for word in postwords: # then alphanumdash words
             if not alnumdash_string(word):
@@ -242,7 +290,74 @@ action = None
 cgiresponse = {}
 if actionlist:
     action = actionlist[0]
-if action == 'markpost':
+if action == 'marknote': # nostr
+    nidlist = form.getlist('nid')
+    nid = None
+    if nidlist:
+        nid = nidlist[0]
+    if nid is None or len(nid)<1 or not alnumdash_string(nid):
+        cgiresponse["error"] = "you must provide a valid nid (note id) parameter"
+    else:
+        out = Popen("/usr/bin/python3 /home/coins/git/monstr/examples/query.py -l 1 -o raw -i '"+nid+"' -r '"+nosrelay+"'", shell=True,stdin=PIPE,stdout=PIPE,stderr=STDOUT,close_fds=True,universal_newlines=True).stdout.read()
+        if len(out) > 32:
+            event = json.loads(out)
+            cgiresponse["nid"] = event["id"]
+            cgiresponse["pubkey"] = event["pubkey"]
+            cgiresponse["created_at"] = event["created_at"]
+            cgiresponse["kind"] = event["kind"]
+            cgiresponse["sig"] = event["sig"]
+            # generate description text
+            notetext = event["content"]
+            tags = event["tags"]
+            desctext = get_description_nostr(notetext,event["kind"],tags)
+            cgiresponse["desctext"] = desctext
+            # archive to json file
+            jsonfilename = downloaddir+nid+".json"
+            if (os.path.isfile(jsonfilename)):
+                cgiresponse["error"] = "note_already_marked"
+            else:
+                jsonfile = open(jsonfilename,'a')
+                jsonfile.write(json.dumps(event))
+                jsonfile.close()
+                if not os.path.isfile(downloaddir+nid):
+                    os.symlink(jsonfilename,downloaddir+nid)
+                # send hash-link to blockchain via the linkmark protocol
+                rpcurl="http://"+rpchost+":"+str(rpcport)
+                marking={}
+                marking["hash"] = {}
+                marking["link"] = {}
+                marking["key"] = {}
+                markinghash = marking["hash"]
+                markinghash["type"] = "nosid"
+                markinghash["hex"] = nid
+                markinglink = marking["link"]
+                markinglink["protocol"] = "https"
+                markinglink["host"] = linkhost
+                markinglink["port"] = linkport
+                markinglink["path"] = "" # path is a waste of space, not recommended
+                markinglink["cert_hash"] = {}
+                markinglinkcerthash = markinglink["cert_hash"]
+                markinglinkcerthash["type"] = "sha256"
+                markinglinkcerthash["hex"] = certhashhex
+                markingkey = marking["key"]
+                markingkey["hex"] = event["pubkey"]
+                rpcdata = {"jsonrpc":"1.0","id":"pythoncgi","method":"mark","params":[marking]}
+                rpcdatadump = json.dumps(rpcdata)
+                rpcresponse = requests.post(url=rpcurl,data=rpcdatadump, headers=rpcheaders, auth=(rpcuser,rpcpassword))
+                cgiresponse["bitmark_rpc_response_1"] = rpcresponse.text
+                # send hash-desc
+                marking2 = {}
+                marking2["hash"] = markinghash
+                marking2["desc"] = {}
+                marking2["key"] = markingkey
+                marking2desc = marking2["desc"]
+                marking2desc["lang"] = ""
+                marking2desc["text"] = desctext
+                rpcdata = {"jsonrpc":"1.0","id":"pythoncgi","method":"mark","params":[marking2]}
+                rpcdatadump = json.dumps(rpcdata)
+                rpcresponse = requests.post(url=rpcurl,data=rpcdatadump, headers=rpcheaders, auth=(rpcuser,rpcpassword))
+                cgiresponse["bitmark_rpc_response_2"] = rpcresponse.text
+elif action == 'markpost': # Twitter
     cgiresponse["posts"] = []
     xuidlist = form.getlist('xuid')
     xuid = None
@@ -378,7 +493,7 @@ if action == 'markpost':
                 newxmkfilename = downloaddir+xmkfilehash
                 cgiresponsep["hash"] = xmkfilehash
                 cgiresponsep["postid"] = postid
-                desctext = get_description(posttext,postquotedtext,postxuname,postxunameorig,postxunamequoted)
+                desctext = get_description_twitter(posttext,postquotedtext,postxuname,postxunameorig,postxunamequoted)
                 cgiresponsep["desctext"] = desctext
                 if (os.path.isfile(newxmkfilename)):
                     cgiresponsep["error"] = "post_already_marked"
@@ -397,8 +512,8 @@ if action == 'markpost':
                 markinghash["hex"] = xmkfilehash
                 markinglink = marking["link"]
                 markinglink["protocol"] = "https"
-                markinglink["host"] = linkhost
-                markinglink["port"] = linkport
+                markinglink["host"] = "xmark_cc"
+                markinglink["port"] = "443"
                 markinglink["path"] = "" # path is a waste of space, not recommended
                 markinglink["cert_hash"] = {}
                 markinglinkcerthash = markinglink["cert_hash"]
