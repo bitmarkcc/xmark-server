@@ -18,5 +18,6 @@ Requirements:
 - Start bitmarkd and web server with a valid HTTPS certificate
 
 # Donate
-Bitcoin: 18qG6KLFdfQjVAsaWCG5HkQBYTzLFXozMb
+BTC: bc1q0795vnddk099je8pp98uqckjlwzamm5t3hdfmz
 Bitmark: bE28ZG3FpoGnyxobDFiybjJsQHUb9mLygb
+XMR: 84qp8nTgei5RrjFzXW3KP3MoFmvh8CcRUBzuGtLpRE2PNr7W3nR7KpU3vxBuRNjHhfcLe8FoXGPzDhyPQk6kHmbb6Fuu3KQ
